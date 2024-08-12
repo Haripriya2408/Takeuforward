@@ -1,7 +1,7 @@
 require('dotenv').config(); // Load environment variables from .env file
 
 const express = require('express');
-const mysql = require('mysql2');
+const { Pool } = require('pg'); // PostgreSQL client
 const bodyParser = require('body-parser');
 const cors = require('cors');
 
@@ -9,14 +9,17 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-const db = mysql.createConnection({
+// Configure PostgreSQL client
+const pool = new Pool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DATABASE,
+  port: process.env.DB_PORT || 5432, // Default PostgreSQL port
 });
 
-db.connect(err => {
+// Test database connection
+pool.connect((err) => {
   if (err) {
     console.error('Database connection failed:', err.stack);
     return;
@@ -25,30 +28,29 @@ db.connect(err => {
 });
 
 // Fetch all banners
-app.get('/banners', (req, res) => {
-  db.query('SELECT * FROM banner', (err, results) => {
-    if (err) {
-      console.error('Error fetching banners:', err);
-      return res.status(500).json({ error: 'Failed to fetch banners' });
-    }
-    
+app.get('/banners', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM banner');
     const now = new Date().getTime();
 
     // Calculate remaining time for each banner
-    const updatedResults = results.map(banner => {
-      const endTime = new Date(banner.endTime).getTime();
+    const updatedResults = rows.map(banner => {
+      const endTime = new Date(banner.endtime).getTime(); // Make sure field names match your PostgreSQL schema
       banner.remainingTime = endTime > now ? endTime - now : 0;
       return banner;
     });
 
     res.json(updatedResults);
-  });
+  } catch (err) {
+    console.error('Error fetching banners:', err);
+    res.status(500).json({ error: 'Failed to fetch banners' });
+  }
 });
 
 // Insert a new banner
-app.post('/banners', (req, res) => {
+app.post('/banners', async (req, res) => {
   const { description, timer, link, is_visible } = req.body;
-  
+
   // Ensure timer is an integer
   const parsedTimer = parseInt(timer, 10);
 
@@ -59,14 +61,14 @@ app.post('/banners', (req, res) => {
   const startTime = new Date();
   const endTime = new Date(startTime.getTime() + parsedTimer * 1000); // Calculate end time
 
-  const sql = 'INSERT INTO banner (description, timer, link, is_visible, startTime, endTime) VALUES (?, ?, ?, ?, ?, ?)';
-  db.query(sql, [description, parsedTimer, link, is_visible, startTime, endTime], (err, result) => {
-    if (err) {
-      console.error('Error inserting banner:', err);
-      return res.status(500).json({ error: 'Failed to insert banner' });
-    }
-    res.send({ id: result.insertId });
-  });
+  const sql = 'INSERT INTO banner (description, timer, link, is_visible, starttime, endtime) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id';
+  try {
+    const { rows } = await pool.query(sql, [description, parsedTimer, link, is_visible, startTime, endTime]);
+    res.send({ id: rows[0].id });
+  } catch (err) {
+    console.error('Error inserting banner:', err);
+    res.status(500).json({ error: 'Failed to insert banner' });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
